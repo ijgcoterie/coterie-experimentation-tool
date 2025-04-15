@@ -53,7 +53,8 @@ if (isSupabaseAvailable) {
  * description: string
  * status: string (enum: 'draft', 'published', 'archived')
  * targeting: jsonb
- * code: text
+ * code: text (legacy field, kept for backward compatibility)
+ * variations: jsonb (new field for multi-variate tests) 
  * created_at: timestamp with time zone
  * updated_at: timestamp with time zone
  * published_at: timestamp with time zone (nullable)
@@ -69,10 +70,16 @@ interface ExperimentRow {
   description: string;
   status: 'draft' | 'published' | 'archived';
   targeting: {
-    conditions: any[];
+    conditions: unknown[];
     environments: string[];
   };
-  code: string;
+  code?: string; // Legacy field
+  variations?: {
+    id: string;
+    name: string;
+    code: string;
+    weight: number;
+  }[];
   created_at: string;
   updated_at: string;
   published_at: string | null;
@@ -85,13 +92,29 @@ interface ExperimentRow {
  * Convert a Supabase row to an Experiment object
  */
 export function mapRowToExperiment(row: ExperimentRow): Experiment {
+  // Handle legacy data format by creating default variations if needed
+  const variations = row.variations || [
+    {
+      id: `var-${Math.random().toString(36).substring(2, 9)}`,
+      name: "Control",
+      code: "",
+      weight: 50
+    },
+    {
+      id: `var-${Math.random().toString(36).substring(2, 9)}`,
+      name: "Treatment",
+      code: row.code || "",
+      weight: 50
+    }
+  ];
+
   return {
     id: row.id,
     name: row.name,
     description: row.description,
     status: row.status,
     targeting: row.targeting,
-    code: row.code,
+    variations,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     publishedAt: row.published_at || undefined,
@@ -105,13 +128,18 @@ export function mapRowToExperiment(row: ExperimentRow): Experiment {
  * Convert an Experiment to a Supabase row format
  */
 export function mapExperimentToRow(experiment: Experiment): ExperimentRow {
+  // Find treatment variation for legacy code field
+  const treatmentVariation = experiment.variations.find(v => 
+    v.name.toLowerCase() === 'treatment' || v.name.toLowerCase() === 'variant');
+  
   return {
     id: experiment.id,
     name: experiment.name,
     description: experiment.description,
     status: experiment.status,
     targeting: experiment.targeting,
-    code: experiment.code,
+    code: treatmentVariation?.code || '', // For backward compatibility
+    variations: experiment.variations,
     created_at: experiment.createdAt,
     updated_at: experiment.updatedAt,
     published_at: experiment.publishedAt || null,

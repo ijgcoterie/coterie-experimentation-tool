@@ -22,9 +22,16 @@ export async function POST(req: NextRequest) {
       description: experimentData.description,
       // Add other required fields for Statsig format conversion
       targeting: experimentData.targeting,
-      code: experimentData.code,
+      variations: experimentData.variations, // Add variations for multi-variate tests
+      code: experimentData.code, // Keep for backward compatibility
       status: 'published'
     };
+    
+    console.log("Publishing experiment with variations:", {
+      name: experimentData.name,
+      variationCount: experimentData.variations?.length || 0,
+      variations: experimentData.variations?.map(v => ({name: v.name, weight: v.weight})) || []
+    });
     
     // Try to publish to Statsig first to get a Statsig-generated ID
     const statsigResult = await publishExperimentToStatsig(statsigMinimalData);

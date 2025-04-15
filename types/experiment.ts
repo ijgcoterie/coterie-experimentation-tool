@@ -1,3 +1,10 @@
+export interface ExperimentVariation {
+  id: string;
+  name: string;
+  code: string;
+  weight: number;
+}
+
 export interface Experiment {
   id: string;
   name: string;
@@ -7,7 +14,7 @@ export interface Experiment {
     conditions: TargetingCondition[];
     environments: string[];
   };
-  code: string;
+  variations: ExperimentVariation[];
   createdAt: string;
   updatedAt: string;
   publishedAt?: string;
@@ -31,5 +38,5 @@ export interface ExperimentFormData {
     conditions: TargetingCondition[];
     environments: string[];
   };
-  code: string;
+  variations: ExperimentVariation[];
 }

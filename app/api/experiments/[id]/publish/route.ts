@@ -22,6 +22,13 @@ export async function POST(
       return NextResponse.json({ error: 'Experiment not found' }, { status: 404 });
     }
     
+    // Log the experiment data before publishing
+    console.log(`Publishing existing experiment ${id} with variations:`, {
+      name: experiment.name,
+      variationCount: experiment.variations?.length || 0,
+      variations: experiment.variations?.map(v => ({name: v.name, weight: v.weight})) || []
+    });
+    
     // Try to publish to Statsig first
     const statsigResult = await publishExperimentToStatsig(experiment);
     

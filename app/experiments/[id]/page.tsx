@@ -10,7 +10,8 @@ import CodeEditor from "@/components/experiments/CodeEditor";
 import CodePreview from "@/components/experiments/CodePreview";
 import JsonViewer from "@/components/ui/JsonViewer";
 import StatsigTargeting from "@/components/experiments/StatsigTargeting";
-import { Experiment, ExperimentFormData } from "@/types/experiment";
+import VariationsEditor from "@/components/experiments/VariationsEditor";
+import { Experiment, ExperimentFormData, ExperimentVariation } from "@/types/experiment";
 import { 
   fetchStatsigExperiment
 } from "@/lib/statsig";
@@ -57,7 +58,20 @@ export default function ExperimentDetailPage({
       conditions: [],
       environments: ["development"],
     },
-    code: DEFAULT_CODE,
+    variations: [
+      {
+        id: `var-${Math.random().toString(36).substring(2, 9)}`,
+        name: "Control",
+        code: "",
+        weight: 50
+      },
+      {
+        id: `var-${Math.random().toString(36).substring(2, 9)}`,
+        name: "Treatment",
+        code: DEFAULT_CODE,
+        weight: 50
+      }
+    ],
   });
 
   // Load the experiment data if not a new experiment
@@ -78,15 +92,33 @@ export default function ExperimentDetailPage({
           // Try to get the experiment directly from Statsig API first
           const statsigExperiment = await fetchStatsigExperiment(id);
           if (statsigExperiment) {
+            // Convert legacy experiment to new format with variations
+            const variations: ExperimentVariation[] = statsigExperiment.variations || [
+              {
+                id: `var-${Math.random().toString(36).substring(2, 9)}`,
+                name: "Control",
+                code: "",
+                weight: 50
+              },
+              {
+                id: `var-${Math.random().toString(36).substring(2, 9)}`,
+                name: "Treatment",
+                code: statsigExperiment.code || "",
+                weight: 50
+              }
+            ];
+            
             setExperiment({
               ...statsigExperiment,
+              variations,
               isFromStatsig: true
             });
+            
             setFormData({
               name: statsigExperiment.name,
               description: statsigExperiment.description,
               targeting: statsigExperiment.targeting,
-              code: statsigExperiment.code,
+              variations,
             });
             setIsLoading(false);
             return;
@@ -108,12 +140,32 @@ export default function ExperimentDetailPage({
         }
         
         const data = await response.json();
-        setExperiment(data);
+        // Convert legacy experiment to new format with variations if needed
+        const variations: ExperimentVariation[] = data.variations || [
+          {
+            id: `var-${Math.random().toString(36).substring(2, 9)}`,
+            name: "Control",
+            code: "",
+            weight: 50
+          },
+          {
+            id: `var-${Math.random().toString(36).substring(2, 9)}`,
+            name: "Treatment",
+            code: data.code || "",
+            weight: 50
+          }
+        ];
+        
+        setExperiment({
+          ...data,
+          variations: data.variations || variations
+        });
+        
         setFormData({
           name: data.name,
           description: data.description,
           targeting: data.targeting,
-          code: data.code,
+          variations: data.variations || variations,
         });
       } catch (err) {
         console.error("Failed to load experiment:", err);
@@ -126,7 +178,7 @@ export default function ExperimentDetailPage({
     loadExperiment();
   }, [isNew, id]);
 
-  const handleFormChange = (field: keyof ExperimentFormData, value: any) => {
+  const handleFormChange = (field: keyof ExperimentFormData, value: unknown) => {
     setFormData({
       ...formData,
       [field]: value,
@@ -500,19 +552,15 @@ export default function ExperimentDetailPage({
         </div>
 
         <div className="border-t border-gray-200 dark:border-gray-800 pt-8">
-          <h2 className="text-xl font-semibold mb-4">Experiment Code</h2>
+          <h2 className="text-xl font-semibold mb-4">Experiment Variations</h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-            Write JavaScript code that will be injected into the client when this experiment is running.
+            Create and manage multiple variations for your experiment. Each variation can have its own JavaScript code and traffic allocation.
           </p>
-          <CodeEditor
-            code={formData.code}
-            onChange={(code) => handleFormChange("code", code)}
-            readOnly={experiment?.status === "archived"}
+          <VariationsEditor 
+            variations={formData.variations}
+            onChange={(variations) => handleFormChange("variations", variations)}
+            disabled={experiment?.status === "archived"}
           />
-          
-          <div className="mt-6">
-            <CodePreview code={formData.code} />
-          </div>
         </div>
 
         {!isNew && experiment?.status === "published" && (
@@ -554,17 +602,11 @@ export default function ExperimentDetailPage({
                       operator: condition.operator,
                       value: condition.value
                     })),
-                    variants: [
-                      {
-                        name: "control",
-                        weight: 50
-                      },
-                      {
-                        name: "treatment",
-                        weight: 50,
-                        jsCode: experiment.code
-                      }
-                    ]
+                    variants: experiment.variations.map(variation => ({
+                      name: variation.name.toLowerCase(),
+                      weight: variation.weight,
+                      ...(variation.code ? { jsCode: variation.code } : {})
+                    }))
                   }
                 }}
                 initialExpandLevel={2}
@@ -586,12 +628,27 @@ await Statsig.initialize(
   { userID: 'user-123' } // User properties for targeting
 );
 
-// Check if user is in experiment
+// Check which group the user is assigned to
 const layer = Statsig.getLayer('${experiment.statsigLayer || `exp_${experiment.id.replace(/-/g, '_')}`}');
-const isInExperiment = layer.get('jsCode', false);
+const jsCode = layer.get('jsCode', '');
+const assignedGroup = layer.get('__assigned_group', '') || layer.get('__assigned_variation', '');
+
+// Check if user is in a specific group
+const isInControlGroup = assignedGroup === '${experiment.variations.find(v => v.name.toLowerCase() === 'control')?.name || 'Control'}';
+const isInVariationA = assignedGroup === '${experiment.variations[1]?.name || 'Treatment'}';
+${experiment.variations.length > 2 ? `const isInVariationB = assignedGroup === '${experiment.variations[2]?.name || 'Variation B'}';` : ''}
+
+// Execute code conditionally based on variation
+if (jsCode) {
+  // Code will run automatically via the SDK, or you can use this check
+  console.log('Running experiment: ${experiment.name}, group: ' + assignedGroup);
+}
 
 // Log an exposure event
-Statsig.logEvent('experiment_viewed', { experimentName: '${experiment.name}' });`}
+Statsig.logEvent('experiment_viewed', { 
+  experimentName: '${experiment.name}',
+  group: assignedGroup
+});`}
               </pre>
             </div>
           </div>

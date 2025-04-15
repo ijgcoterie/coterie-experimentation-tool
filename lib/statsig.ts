@@ -11,20 +11,41 @@ interface StatsigExperiment {
   creatorID?: string; 
   idType?: string;
   targetingGate?: string;
+  targetingGateID?: string;
+  
+  // For layer API responses
   variants?: {
     name: string;
+    weight?: number;
     value?: {
       jsCode?: string;
-      [key: string]: any;
+      [key: string]: unknown;
     };
-    [key: string]: any;
+    [key: string]: unknown;
   }[];
+  
+  // For experiment API responses
+  groups?: {
+    name: string;
+    id?: string;
+    size?: number;
+    parameterValues?: {
+      jsCode?: string;
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  }[];
+  
   layerName?: string;
+  layerID?: string;
+  
   // Add any other fields that might be in the real API response
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
-interface StatsigExperimentsResponse {
+// Used for typing API responses
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+interface StatsigExperimentResponse {
   message: string;
   data: StatsigExperiment[];
   pagination?: {
@@ -72,7 +93,7 @@ export async function fetchStatsigExperiments(): Promise<Experiment[]> {
       let errorData;
       try {
         errorData = await response.json();
-      } catch (e) {
+      } catch {
         // If we can't parse JSON, use the status text
         errorData = { message: response.statusText };
       }
@@ -243,10 +264,30 @@ document.querySelector('header').style.color = 'white';`
  * Publish an experiment to Statsig
  * Note: This function accepts either a full Experiment object or a partial object with minimal required fields
  */
-export async function publishExperimentToStatsig(experiment: Partial<Experiment> & { name: string; description: string; targeting: any; code: string; }): Promise<{ success: boolean; message?: string; statsigId?: string }> {
+export async function publishExperimentToStatsig(experiment: Partial<Experiment> & { 
+  name: string; 
+  description: string; 
+  targeting: { 
+    conditions: TargetingCondition[]; 
+    environments: string[] 
+  }; 
+  variations?: { 
+    id: string; 
+    name: string; 
+    code: string; 
+    weight: number 
+  }[];
+  code?: string; // For backward compatibility
+}): Promise<{ success: boolean; message?: string; statsigId?: string }> {
   try {
     // Convert our experiment format to Statsig format
     const statsigExperiment = convertToStatsigFormat(experiment);
+    
+    // Debug log the experiment to be sent to Statsig
+    console.log("Publishing to Statsig with format:", {
+      variations: experiment.variations?.map(v => ({name: v.name, weight: v.weight})),
+      statsigExperiment: JSON.stringify(statsigExperiment, null, 2)
+    });
     
     // Determine if this is a create or update operation
     const method = experiment.statsigId ? 'PUT' : 'POST';
@@ -265,7 +306,24 @@ export async function publishExperimentToStatsig(experiment: Partial<Experiment>
     });
     
     if (!response.ok) {
-      const errorData = await response.json();
+      let errorData;
+      try {
+        errorData = await response.json();
+      } catch (e) {
+        // If response isn't valid JSON
+        throw new Error(`API error: ${response.status} - ${response.statusText}`);
+      }
+      
+      // Log detailed error information
+      console.error("Statsig API error details:", {
+        status: response.status,
+        statusText: response.statusText,
+        errorData: JSON.stringify(errorData, null, 2),
+        requestBody: JSON.stringify(statsigExperiment, null, 2),
+        url,
+        method
+      });
+      
       throw new Error(errorData.message || `API error: ${response.status}`);
     }
     
@@ -296,9 +354,16 @@ export async function publishExperimentToStatsig(experiment: Partial<Experiment>
       // For consistency, we'll make it clear this is a dev mock ID
       const statsigId = experiment.statsigId || `statsig-dev-${Math.floor(Math.random() * 10000)}`;
       
+      // Log what would have been sent to Statsig
+      console.log(`[DEV MODE] Would have sent to Statsig:`, {
+        method: experiment.statsigId ? 'PUT' : 'POST',
+        variations: experiment.variations?.length || 0,
+        name: experiment.name
+      });
+      
       return {
         success: true,
-        message: `[DEV MODE] Experiment "${experiment.name}" successfully ${experiment.statsigId ? 'updated' : 'created'} in Statsig`,
+        message: `[DEV MODE] Experiment "${experiment.name}" successfully ${experiment.statsigId ? 'updated' : 'created'} in Statsig with ${(experiment.variations?.length || 0)} variations`,
         statsigId
       };
     }
@@ -551,20 +616,63 @@ export async function getStatsigTargetingGates(): Promise<{ id: string; name: st
 // Helper function to convert Statsig experiment to our format
 function convertStatsigExperiment(statsigExp: StatsigExperiment): Experiment {
   
-  // Safely extract code from treatment variant if available
-  let code = "";
-  if (statsigExp.variants && Array.isArray(statsigExp.variants)) {
-    const treatmentVariant = statsigExp.variants.find(v => v.name === "treatment");
-    code = treatmentVariant?.value?.jsCode || "";
+  // Extract variations from Statsig experiment - check both formats
+  let variations = [];
+  
+  // First check for groups format (experiment API)
+  if (statsigExp.groups && Array.isArray(statsigExp.groups) && statsigExp.groups.length > 0) {
+    variations = statsigExp.groups.map(group => ({
+      id: group.id || `var-${Math.random().toString(36).substring(2, 9)}`,
+      name: group.name.charAt(0).toUpperCase() + group.name.slice(1), // Capitalize first letter
+      code: group.parameterValues?.jsCode || "",
+      weight: group.size || Math.floor(100 / statsigExp.groups.length)
+    }));
+  } 
+  // Then check for variants format (layer API)
+  else if (statsigExp.variants && Array.isArray(statsigExp.variants) && statsigExp.variants.length > 0) {
+    variations = statsigExp.variants.map(variant => ({
+      id: `var-${Math.random().toString(36).substring(2, 9)}`,
+      name: variant.name.charAt(0).toUpperCase() + variant.name.slice(1), // Capitalize first letter
+      code: variant.value?.jsCode || "",
+      weight: variant.weight || Math.floor(100 / statsigExp.variants.length)
+    }));
+  }
+  // Default to standard A/B test if no variations found
+  else {
+    variations = [
+      {
+        id: `var-${Math.random().toString(36).substring(2, 9)}`,
+        name: "Control",
+        code: "",
+        weight: 50
+      },
+      {
+        id: `var-${Math.random().toString(36).substring(2, 9)}`,
+        name: "Treatment",
+        code: "",
+        weight: 50
+      }
+    ];
   }
   
-  // Extract conditions from targeting gate (simplified example)
-  const conditions: TargetingCondition[] = statsigExp.targetingGate 
+  // Log what we're extracting for debugging
+  console.log("Converting Statsig experiment to our format:", {
+    id: statsigExp.id,
+    name: statsigExp.name,
+    groupsCount: statsigExp.groups?.length || 0,
+    variantsCount: statsigExp.variants?.length || 0,
+    extractedVariationsCount: variations.length
+  });
+  
+  // Extract conditions from targeting gate (handle both field names)
+  const targetingGate = statsigExp.targetingGate || statsigExp.targetingGateID;
+  
+  const conditions: TargetingCondition[] = targetingGate
     ? [{ 
         type: "user", 
         attribute: "gate", 
         operator: "equals", 
-        value: statsigExp.targetingGate 
+        value: targetingGate
       }] 
     : [];
   
@@ -581,42 +689,90 @@ function convertStatsigExperiment(statsigExp: StatsigExperiment): Experiment {
       conditions,
       environments: ["development", "staging", "production"] // Default to all environments
     },
-    code,
+    variations,
     createdAt: new Date(createdTime).toISOString(),
     updatedAt: new Date(lastModTime).toISOString(),
     publishedAt: statsigExp.status === "active" ? new Date(lastModTime).toISOString() : undefined,
     statsigId: statsigExp.id, // Store the Statsig ID for future updates
-    statsigLayer: statsigExp.layerName,
+    statsigLayer: statsigExp.layerName || statsigExp.layerID,
     isFromStatsig: true
   };
 }
 
 // Helper function to convert our experiment format to Statsig format
-function convertToStatsigFormat(experiment: Partial<Experiment> & { name: string; description: string; targeting: any; code: string; }): any {
-  // Get status or default to "active" for published
-  const status = experiment.status === "draft" ? "draft" : "active";
-
-  return {
-    name: experiment.name,
-    description: experiment.description,
-    status: status,
-    idType: "userID", // Default ID type
-    targetingGate: experiment.targeting.conditions.length > 0 
-      ? experiment.targeting.conditions.find(c => c.type === "user" && c.attribute === "gate")?.value 
-      : undefined,
-    variants: [
+function convertToStatsigFormat(experiment: Partial<Experiment> & { 
+  name: string; 
+  description: string; 
+  targeting: { 
+    conditions: TargetingCondition[]; 
+    environments: string[] 
+  }; 
+  variations?: { 
+    id: string; 
+    name: string; 
+    code: string; 
+    weight: number 
+  }[];
+  code?: string; // For backward compatibility
+}): Record<string, unknown> {
+  // Convert variations to groups format
+  const groups = [];
+  
+  if (experiment.variations && experiment.variations.length > 0) {
+    // Map our variations to the groups format
+    experiment.variations.forEach(variation => {
+      const varName = variation.name.toLowerCase().replace(/\s+/g, '_');
+      groups.push({
+        name: variation.name,
+        id: varName,
+        size: variation.weight,
+        parameterValues: variation.code ? { jsCode: variation.code } : {}
+      });
+    });
+  } else if (experiment.code) {
+    // Legacy format with single treatment
+    groups.push(
       {
-        name: "control",
-        value: {}
+        name: "Control",
+        id: "control",
+        size: 50,
+        parameterValues: {}
       },
       {
-        name: "treatment",
-        value: {
+        name: "Treatment",
+        id: "treatment",
+        size: 50,
+        parameterValues: {
           jsCode: experiment.code
         }
       }
-    ],
-    // Only include if it exists
-    ...(experiment.statsigLayer ? { layerName: experiment.statsigLayer } : {})
+    );
+  } else {
+    // Default if neither is provided
+    groups.push({
+      name: "Control",
+      id: "control",
+      size: 100,
+      parameterValues: {}
+    });
+  }
+  
+  // Find the control group (usually the first one or one named 'control')
+  const controlGroup = groups.find(g => g.name.toLowerCase().includes('control')) || groups[0];
+  const controlGroupID = controlGroup?.id;
+  
+  // Find a targeting gate if one exists
+  const targetingGateID = experiment.targeting.conditions.length > 0 
+    ? experiment.targeting.conditions.find(c => c.type === "user" && c.attribute === "gate")?.value 
+    : null;
+  
+  // Simple approach - just the minimal required fields
+  return {
+    name: experiment.name,
+    description: experiment.description || "",
+    idType: "userID",
+    groups,
+    ...(controlGroupID ? { controlGroupID } : {}),
+    allocation: 100
   };
 }

@@ -27,21 +27,22 @@ interface StatsigUser {
   country?: string;
   locale?: string;
   appVersion?: string;
-  custom?: Record<string, any>;
-  [key: string]: any;
+  custom?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 interface LogEvent {
   type: 'info' | 'error' | 'debug';
   message: string;
-  data?: any;
+  data?: unknown;
 }
 
 // Global state
 let _initialized = false;
 let _config: ExperimentationConfig | null = null;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 let _activeExperiments: Record<string, Experiment> = {};
-let _statsigInstance: any = null; // Will hold the Statsig SDK instance
+let _statsigInstance: unknown = null; // Will hold the Statsig SDK instance
 
 /**
  * Initialize the experimentation SDK
@@ -137,18 +138,24 @@ export async function checkAndExecuteExperiments(): Promise<void> {
     for (const layerName of Object.keys(allLayers)) {
       const layer = _statsigInstance.getLayer(layerName);
       
-      // Check if this layer has a treatment with jsCode
+      // Get the assigned group name for this layer
+      const assignedGroup = layer.get('__assigned_group', '') || layer.get('__assigned_variation', '');
+      
+      // Check if this layer has a jsCode parameter in the assigned group
       const jsCode = layer.get('jsCode', '');
       
       if (jsCode) {
-        log('debug', `Found experiment code in layer: ${layerName}`, { jsCode });
+        log('debug', `Found experiment code in layer: ${layerName}`, { 
+          jsCode, 
+          group: assignedGroup || 'default'
+        });
         
         // Execute the experiment code within a try/catch block
         try {
-          executeCode(jsCode, layerName);
-          log('info', `Successfully executed experiment: ${layerName}`);
+          executeCode(jsCode, layerName, assignedGroup);
+          log('info', `Successfully executed experiment: ${layerName}, group: ${assignedGroup || 'default'}`);
         } catch (execError) {
-          log('error', `Error executing experiment code for ${layerName}`, execError);
+          log('error', `Error executing experiment code for ${layerName}, group: ${assignedGroup || 'default'}`, execError);
         }
       }
     }
@@ -158,13 +165,14 @@ export async function checkAndExecuteExperiments(): Promise<void> {
 }
 
 /**
- * Force execution of a specific experiment by ID
+ * Force execution of a specific experiment by ID and variation
  * Useful for development and testing
  * 
  * @param experimentId The experiment ID to execute
+ * @param variation Optional variation name to execute
  * @param code Optional code to execute (if not provided, will use code from Statsig)
  */
-export function forceExecuteExperiment(experimentId: string, code?: string): void {
+export function forceExecuteExperiment(experimentId: string, variation?: string, code?: string): void {
   if (!code) {
     if (!_statsigInstance) {
       log('error', 'SDK not initialized, call initialize() first');
@@ -187,32 +195,43 @@ export function forceExecuteExperiment(experimentId: string, code?: string): voi
   }
   
   try {
-    executeCode(code, experimentId);
-    log('info', `Force executed experiment: ${experimentId}`);
+    executeCode(code, experimentId, variation);
+    log('info', `Force executed experiment: ${experimentId}, variation: ${variation || 'default'}`);
   } catch (error) {
-    log('error', `Error force executing experiment: ${experimentId}`, error);
+    log('error', `Error force executing experiment: ${experimentId}, variation: ${variation || 'default'}`, error);
   }
 }
 
 /**
  * Helper function to safely execute experiment code
  */
-function executeCode(code: string, experimentId: string): void {
+function executeCode(code: string, experimentId: string, variationName?: string): void {
   // Execute the code in an IIFE with a try/catch block
   const execFunc = new Function(
     'experimentId',
+    'variationName',
     `
     (() => {
       try {
+        // Make experiment info available to the experiment code
+        window.__COTERIE_EXPERIMENT__ = {
+          id: experimentId,
+          group: variationName || 'default',
+          variation: variationName || 'default' // Keep for backward compatibility
+        };
+        
         ${code}
       } catch (error) {
         console.error('Experiment execution error:', error);
+      } finally {
+        // Clean up
+        delete window.__COTERIE_EXPERIMENT__;
       }
     })();
     `
   );
   
-  execFunc(experimentId);
+  execFunc(experimentId, variationName || '');
 }
 
 /**
@@ -237,7 +256,7 @@ function generateAnonymousId(): string {
 /**
  * Internal logging function
  */
-function log(type: LogEvent['type'], message: string, data?: any): void {
+function log(type: LogEvent['type'], message: string, data?: unknown): void {
   if (type === 'debug' && !_config?.debug) return;
   
   const event: LogEvent = { type, message, data };
@@ -278,7 +297,7 @@ export function createExperimentationProvider() {
     updateUser: (user: StatsigUser) => Promise<void>;
   }>({
     initialized: false,
-    updateUser: async () => {},
+    updateUser: async () => {/* Empty function */},
   });
   
   // Provider component
@@ -321,10 +340,11 @@ export function createExperimentationProvider() {
       updateUser,
     }), [initialized]);
     
-    return (
-      <ExperimentContext.Provider value={value}>
-        {children}
-      </ExperimentContext.Provider>
+    // @ts-expect-error - This is valid JSX, but TypeScript is confused by the import pattern
+    return React.createElement(
+      ExperimentContext.Provider,
+      { value },
+      children
     );
   }
   
@@ -360,12 +380,26 @@ export const createSdkScript = (clientKey: string): string => {
           Object.keys(allLayers).forEach(function(layerName) {
             var layer = statsig.getLayer(layerName);
             var jsCode = layer.get('jsCode', '');
+            var assignedGroup = layer.get('__assigned_group', '') || layer.get('__assigned_variation', '');
+            
             if (jsCode) {
               try {
+                // Make experiment info available to the code
+                window.__COTERIE_EXPERIMENT__ = {
+                  id: layerName,
+                  group: assignedGroup || 'default',
+                  variation: assignedGroup || 'default' // Keep for backward compatibility
+                };
+                
+                // Execute the experiment code
                 (new Function(jsCode))();
-                console.info('[CoterieLabs] Executed experiment: ' + layerName);
+                
+                console.info('[CoterieLabs] Executed experiment: ' + layerName + ', group: ' + (assignedGroup || 'default'));
+                
+                // Clean up
+                delete window.__COTERIE_EXPERIMENT__;
               } catch (error) {
-                console.error('[CoterieLabs] Error executing experiment: ' + layerName, error);
+                console.error('[CoterieLabs] Error executing experiment: ' + layerName + ', group: ' + (assignedGroup || 'default'), error);
               }
             }
           });
